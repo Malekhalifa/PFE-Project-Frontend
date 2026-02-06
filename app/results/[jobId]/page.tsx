@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { getResults, getRawData } from "../../lib/api";
+import { getResults, getRawData, getReportExport } from "../../lib/api";
 
 export default function ResultsPage() {
     const params = useParams();
@@ -14,6 +14,7 @@ export default function ResultsPage() {
     const [showRaw, setShowRaw] = useState(false);
     const [rawLoading, setRawLoading] = useState(false);
     const [rawError, setRawError] = useState("");
+    const [exportLoading, setExportLoading] = useState(false);
 
     if (!jobId || Array.isArray(jobId)) {
         return <p style={{ color: "red" }}>Invalid Job ID</p>;
@@ -53,7 +54,38 @@ export default function ResultsPage() {
         quality_score,
         type_consistency,
         numeric_stats,
+        column_analysis,
     } = quality_report;
+
+    const formatPercent = (ratio: unknown) => {
+        const n = typeof ratio === "number" ? ratio : NaN;
+        return Number.isFinite(n) ? `${(n * 100).toFixed(0)}%` : "-";
+    };
+
+    const formatNumber = (value: unknown, digits = 2) => {
+        const n = typeof value === "number" ? value : NaN;
+        return Number.isFinite(n) ? n.toFixed(digits) : "-";
+    };
+
+    const handleDownloadReport = async () => {
+        try {
+            setExportLoading(true);
+            const report = await getReportExport(jobId as string);
+            const blob = new Blob([JSON.stringify(report, null, 2)], {
+                type: "application/json",
+            });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `analysis-report-${jobId}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch {
+            setRawError("Failed to download report.");
+        } finally {
+            setExportLoading(false);
+        }
+    };
 
     const handleToggleRaw = async () => {
         if (showRaw) {
@@ -77,6 +109,32 @@ export default function ResultsPage() {
         }
     };
 
+    // ====== NEW HELPER: render numeric distribution ======
+    const renderDistribution = (dist: any) => {
+        if (!dist) return "-";
+        return (
+            <div className="space-y-1 text-xs">
+                <div>
+                    <strong>Histogram:</strong> {dist.histogram?.counts?.join(", ")}
+                </div>
+                <div>
+                    <strong>Quantiles:</strong>{" "}
+                    0.25={dist.quantiles?.["0.25"]}, 0.5={dist.quantiles?.["0.5"]}, 0.75={dist.quantiles?.["0.75"]}, 0.95={dist.quantiles?.["0.95"]}
+                </div>
+                <div>
+                    <strong>Skewness:</strong> {formatNumber(dist.skewness, 2)}, <strong>Kurtosis:</strong> {formatNumber(dist.kurtosis, 2)}
+                </div>
+                <div>
+                    <strong>Zero Ratio:</strong> {formatPercent(dist.zero_ratio)}
+                </div>
+                <div>
+                    <strong>Constant:</strong> {dist.is_constant ? "Yes" : "No"}, <strong>Near-constant:</strong> {dist.is_near_constant ? "Yes" : "No"}
+                </div>
+            </div>
+        );
+    };
+
+
     return (
         <div className="min-h-screen bg-slate-950 px-4 py-10 text-slate-50">
             <div className="mx-auto max-w-5xl space-y-8">
@@ -84,7 +142,14 @@ export default function ResultsPage() {
                     <h1 className="text-3xl font-semibold">
                         Results for Job {jobId}
                     </h1>
-                    <div className="mt-4 flex items-center gap-3">
+                    <div className="mt-4 flex flex-wrap items-center gap-3">
+                        <button
+                            onClick={handleDownloadReport}
+                            disabled={exportLoading}
+                            className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold hover:bg-emerald-500 disabled:opacity-50"
+                        >
+                            {exportLoading ? "Downloading…" : "Download report"}
+                        </button>
                         <button
                             onClick={handleToggleRaw}
                             className="rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold hover:bg-sky-500"
@@ -104,7 +169,7 @@ export default function ResultsPage() {
                     <>
                         <section className="rounded-xl bg-slate-900 p-6 shadow">
                             <h2 className="mb-3 text-xl font-semibold">
-                                Cleaned Data Summary
+                                Analyzed Data Summary
                             </h2>
                             <p>Rows: {cleaned_data.rows}</p>
                             <p>Columns: {cleaned_data.columns}</p>
@@ -159,10 +224,6 @@ export default function ResultsPage() {
                                     <thead>
                                         <tr className="border-b border-slate-700">
                                             <th className="py-1">Column</th>
-                                            <th className="py-1">Numeric</th>
-                                            <th className="py-1">
-                                                Non-numeric
-                                            </th>
                                             <th className="py-1">Missing</th>
                                             <th className="py-1">Valid</th>
                                             <th className="py-1">Invalid</th>
@@ -181,12 +242,6 @@ export default function ResultsPage() {
                                                     {col}
                                                 </td>
                                                 <td className="py-1">
-                                                    {counts.numeric}
-                                                </td>
-                                                <td className="py-1">
-                                                    {counts.non_numeric}
-                                                </td>
-                                                <td className="py-1">
                                                     {counts.missing}
                                                 </td>
                                                 <td className="py-1">
@@ -202,6 +257,68 @@ export default function ResultsPage() {
                                         ))}
                                     </tbody>
                                 </table>
+                            </section>
+                        )}
+
+                        {column_analysis && (
+                            <section className="rounded-xl bg-slate-900 p-6 shadow">
+                                <h2 className="mb-3 text-xl font-semibold">
+                                    Column Analysis
+                                </h2>
+                                <div className="max-h-[32rem] overflow-auto rounded-lg border border-slate-800">
+                                    <table className="min-w-full border-collapse text-sm">
+                                        <thead className="bg-slate-800">
+                                            <tr>
+                                                <th className="border-b border-slate-700 px-3 py-2 text-left font-mono text-xs font-semibold">
+                                                    Column
+                                                </th>
+                                                <th className="border-b border-slate-700 px-3 py-2 text-left text-xs font-semibold">
+                                                    Type Check
+                                                </th>
+                                                <th className="border-b border-slate-700 px-3 py-2 text-left text-xs font-semibold">
+                                                    Cardinality
+                                                </th>
+                                                <th className="border-b border-slate-700 px-3 py-2 text-left text-xs font-semibold">
+                                                    Missing
+                                                </th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {Object.entries(column_analysis).map(
+                                                ([col, a]: any, idx) => {
+                                                    const len = a?.string_length;
+                                                    const conf = a?.string_format_confidence;
+                                                    return (
+                                                        <tr
+                                                            key={col}
+                                                            className={
+                                                                idx % 2 === 0
+                                                                    ? "bg-slate-900"
+                                                                    : "bg-slate-950"
+                                                            }
+                                                        >
+                                                            <td className="border-b border-slate-800 px-3 py-2 font-mono">
+                                                                {col}
+                                                            </td>
+                                                            <td className="border-b border-slate-800 px-3 py-2">
+                                                                {a?.type_check ?? "-"}
+                                                            </td>
+                                                            <td className="border-b border-slate-800 px-3 py-2">
+                                                                {a?.cardinality ?? "-"}
+                                                            </td>
+                                                            <td className="border-b border-slate-800 px-3 py-2">
+                                                                {formatNumber(a?.missing_pct, 1)}%
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                }
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <p className="mt-3 text-xs text-slate-400">
+                                    Email/Date/ID-like values are confidence ratios (share of non-empty values matching a regex).
+                                </p>
                             </section>
                         )}
 
@@ -249,6 +366,33 @@ export default function ResultsPage() {
                         </div>
                     </section>
                 )}
+                {column_analysis && (
+                    <section className="rounded-xl bg-slate-900 p-6 shadow">
+                        <h2 className="mb-3 text-xl font-semibold">Numeric Column Distribution</h2>
+                        <div className="space-y-4">
+                            {Object.entries(column_analysis).map(([col, a]: any) => {
+                                if (a?.inferred_type !== "numeric") return null; // only numeric
+                                return (
+                                    <div key={col} className="rounded-md border border-slate-700 p-3">
+                                        <div className="font-mono font-semibold">{col}</div>
+                                        <div className="grid grid-cols-2 gap-2 text-xs">
+                                            <div>Min: {formatNumber(a.min)}</div>
+                                            <div>Max: {formatNumber(a.max)}</div>
+                                            <div>Mean: {formatNumber(a.mean)}</div>
+                                            <div>Median: {formatNumber(a.median)}</div>
+                                            <div>Std: {formatNumber(a.std)}</div>
+                                            <div className="col-span-2 mt-2">
+                                                <strong>Distribution Metrics:</strong>
+                                                {renderDistribution(a.distribution)}
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </section>
+                )}
+
             </div>
         </div>
     );

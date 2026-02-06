@@ -39,3 +39,9 @@ export async function getRawData(jobId: string) {
     if (!res.ok) throw new Error("Raw data fetch failed");
     return res.json();
 }
+
+export async function getReportExport(jobId: string) {
+    const res = await fetch(`${API_URL}/results/${jobId}/export`);
+    if (!res.ok) throw new Error("Report export fetch failed");
+    return res.json();
+}
